@@ -9,7 +9,8 @@
 # If no directory specified, scans from the current directory.
 
 # --- Script Configuration & Robustness ---
-set -euo pipefail
+# Removed set -euo pipefail to prevent silent exits in pipe operations
+set -u
 
 # --- Argument Parsing ---
 SCAN_DIR="${1:-.}"
@@ -73,11 +74,14 @@ json_output() {
     local issues_json="["
     local first=true
     # Create a unique, sorted list of suspicious files
-    local unique_files=$(printf '%s\n' "${suspicious_files[@]}" | sort -u)
-    for file in $unique_files; do
-        [[ "$first" == "true" ]] && first=false || issues_json+=","
-        issues_json+="\"$file\""
-    done
+    if [[ ${#suspicious_files[@]} -gt 0 ]]; then
+        local unique_files=$(printf '%s\n' "${suspicious_files[@]}" | sort -u)
+        while IFS= read -r file; do
+            [[ -z "$file" ]] && continue
+            [[ "$first" == "true" ]] && first=false || issues_json+=","
+            issues_json+="\"$file\""
+        done <<< "$unique_files"
+    fi
     issues_json+="]"
 
     cat <<EOF
@@ -158,49 +162,49 @@ done
 log "\n${YELLOW}📁 Building file index and checking for suspicious files/directories...${NC}"
 
 # Find all relevant files once to improve performance
-ALL_FILES=$(find "$SCAN_DIR" -type f -not -path "*/node_modules/*" -not -path "*/.git/*" 2>/dev/null || true)
-PKG_FILES=$(echo "$ALL_FILES" | grep 'package\.json$' || true)
+ALL_FILES=$(find "$SCAN_DIR" -type f -not -path "*/node_modules/*" -not -path "*/.git/*" 2>/dev/null || echo "")
+PKG_FILES=$(echo "$ALL_FILES" | grep 'package\.json$' || echo "")
 
 # 2.1: Check for the malicious workflow file
-echo "$ALL_FILES" | grep -F "$MALICIOUS_WORKFLOW_NAME" | while IFS= read -r file; do
-    [[ -z "$file" ]] && continue
-    log "${RED}⚠️  FOUND: Malicious workflow file name${NC}"
-    log "   Location: ${file}"
-    add_suspicious_file "$file"
-    ((found_issues++))
-done
+if [[ -n "$ALL_FILES" ]]; then
+    echo "$ALL_FILES" | grep -F "$MALICIOUS_WORKFLOW_NAME" 2>/dev/null | while IFS= read -r file; do
+        [[ -z "$file" ]] && continue
+        log "${RED}⚠️  FOUND: Malicious workflow file name${NC}"
+        log "   Location: ${file}"
+        add_suspicious_file "$file"
+        ((found_issues++))
+    done || true
+fi
 
 # 2.2: Search for bundle.js in package roots (where package.json exists)
-echo "$PKG_FILES" | while IFS= read -r pkg; do
-    [[ -z "$pkg" ]] && continue
-    ((scanned_pkgs++))
-    local pkg_dir
-    pkg_dir=$(dirname "$pkg")
-    local bundle_path="$pkg_dir/bundle.js"
-    if [[ -f "$bundle_path" ]]; then
-        log "${RED}⚠️  FOUND: bundle.js in a package root${NC}"
-        log "   Location: ${bundle_path}"
-        
-        local hash
-        hash=$(get_file_hash "$bundle_path")
-        if [[ "$hash" == "$MALICIOUS_HASH" ]]; then
-            log "${RED}   🚨 CRITICAL: Hash matches known malicious bundle.js!${NC}"
-        else
-            log "   Hash: $hash (does not match known hash)"
+if [[ -n "$PKG_FILES" ]]; then
+    while IFS= read -r pkg; do
+        [[ -z "$pkg" ]] && continue
+        ((scanned_pkgs++))
+        pkg_dir=$(dirname "$pkg")
+        bundle_path="$pkg_dir/bundle.js"
+        if [[ -f "$bundle_path" ]]; then
+            log "${RED}⚠️  FOUND: bundle.js in a package root${NC}"
+            log "   Location: ${bundle_path}"
+            
+            hash=$(get_file_hash "$bundle_path")
+            if [[ "$hash" == "$MALICIOUS_HASH" ]]; then
+                log "${RED}   🚨 CRITICAL: Hash matches known malicious bundle.js!${NC}"
+            else
+                log "   Hash: $hash (does not match known hash)"
+            fi
+            
+            add_suspicious_file "$bundle_path"
+            ((found_issues++))
         fi
-        
-        add_suspicious_file "$bundle_path"
-        ((found_issues++))
-    fi
-done
+    done <<< "$PKG_FILES"
+fi
 
 # 2.3: Check git repos for structural indicators
 find "$SCAN_DIR" -type d -name ".git" 2>/dev/null | while IFS= read -r gitdir; do
     [[ -z "$gitdir" ]] && continue
     ((scanned_dirs++))
-    local repo_dir
     repo_dir=$(dirname "$gitdir")
-    local repo_name
     repo_name=$(basename "$repo_dir")
 
     # Check for shai-hulud branch
@@ -216,30 +220,31 @@ find "$SCAN_DIR" -type d -name ".git" 2>/dev/null | while IFS= read -r gitdir; d
         log "   Location: ${repo_dir}"
         ((found_issues++))
     fi
-done
+done || true
 
 # --- STAGE 3: Content-Based Checks ---
 
 # 3.1: Check for exposed npm tokens in .npmrc files
 log "\n${YELLOW}🔑 Checking for exposed npm tokens in .npmrc files...${NC}"
-echo "$ALL_FILES" | grep '\.npmrc$' | while IFS= read -r file; do
-    [[ -z "$file" ]] && continue
-    if grep -Eq "//registry\.npmjs\.org/:_authToken=|//npm\.pkg\.github\.com/:_authToken=" "$file" 2>/dev/null; then
-        log "${RED}⚠️  FOUND: .npmrc file with authentication token${NC}"
-        log "   Location: ${file}"
-        add_suspicious_file "$file"
-        ((found_issues++))
-    fi
-done
+if [[ -n "$ALL_FILES" ]]; then
+    echo "$ALL_FILES" | grep '\.npmrc$' 2>/dev/null | while IFS= read -r file; do
+        [[ -z "$file" ]] && continue
+        if grep -Eq "//registry\.npmjs\.org/:_authToken=|//npm\.pkg\.github\.com/:_authToken=" "$file" 2>/dev/null; then
+            log "${RED}⚠️  FOUND: .npmrc file with authentication token${NC}"
+            log "   Location: ${file}"
+            add_suspicious_file "$file"
+            ((found_issues++))
+        fi
+    done || true
+fi
 
 # 3.2: Check package.json files for malicious install scripts
-if command -v jq >/dev/null 2>&1; then
+if command -v jq >/dev/null 2>&1 && [[ -n "$PKG_FILES" ]]; then
     log "\n${YELLOW}📦 Checking package.json files for suspicious scripts...${NC}"
-    echo "$PKG_FILES" | while IFS= read -r pkg; do
+    while IFS= read -r pkg; do
         [[ -z "$pkg" ]] && continue
         # Specific check for the known worm behavior
-        local malicious_postinstall
-        malicious_postinstall=$(jq -r '.scripts.postinstall // ""' "$pkg" 2>/dev/null | grep -E "node.*bundle\.js" || true)
+        malicious_postinstall=$(jq -r '.scripts.postinstall // ""' "$pkg" 2>/dev/null | grep -E "node.*bundle\.js" || echo "")
         
         if [[ -n "$malicious_postinstall" ]]; then
             log "${RED}🚨 CRITICAL: Found malicious 'postinstall' script in ${pkg}${NC}"
@@ -249,11 +254,10 @@ if command -v jq >/dev/null 2>&1; then
         fi
         
         # Broader check for other suspicious lifecycle scripts
-        local suspicious_scripts
         suspicious_scripts=$(jq -r '.scripts // {} | to_entries[] | select(
             (.key | test("^(pre|post)?install$|^prepare$")) and 
             (.value | test("curl|wget|eval\\(|--force"))
-        ) | "\(.key): \(.value)"' "$pkg" 2>/dev/null)
+        ) | "\(.key): \(.value)"' "$pkg" 2>/dev/null || echo "")
 
         if [[ -n "$suspicious_scripts" ]]; then
             log "${YELLOW}⚠️  FOUND: Potentially suspicious lifecycle script(s) in ${pkg}${NC}"
@@ -263,51 +267,73 @@ if command -v jq >/dev/null 2>&1; then
             add_suspicious_file "$pkg"
             ((found_issues++))
         fi
-    done
+    done <<< "$PKG_FILES"
 fi
 
 # 3.3: Use grep/rg to scan all code for string indicators
 log "\n${YELLOW}🌐 Scanning all non-binary files for string indicators...${NC}"
-# Combine patterns for efficiency
-# Using -F for fixed string on the webhook URL for performance and accuracy
-# Using -e for regex on the others
-# Note: The backslashes for the URL are for the shell variable, not the grep pattern itself.
 if [[ "$GREP_CMD" == "rg" ]]; then
+    # First search for the exact webhook URL
     rg --type-not binary -F "$MALICIOUS_WEBHOOK_URL" \
-        -e "npm publish.*--force" \
-        -e "trufflehog.*filesystem.*/" \
         --glob "!$SCRIPT_NAME" \
         --glob "!node_modules/**" \
         --glob "!.git/**" \
         "$SCAN_DIR" 2>/dev/null | while IFS= read -r line; do
         
-        local file
         file=$(echo "$line" | cut -d: -f1)
-        local match
+        match=$(echo "$line" | cut -d: -f3-)
+
+        log "${RED}🚨 CRITICAL: Found known malicious webhook URL!${NC}"
+        log "   File:    $file"
+        log "   Context: ${match}"
+        add_suspicious_file "$file"
+        ((found_issues++))
+    done || true
+
+    # Then search for other patterns
+    rg -e "npm publish.*--force" \
+       -e "trufflehog.*filesystem.*/" \
+        --glob "!$SCRIPT_NAME" \
+        --glob "!node_modules/**" \
+        --glob "!.git/**" \
+        "$SCAN_DIR" 2>/dev/null | while IFS= read -r line; do
+        
+        file=$(echo "$line" | cut -d: -f1)
         match=$(echo "$line" | cut -d: -f3-)
 
         log "${RED}⚠️  FOUND: Suspicious string indicator${NC}"
         log "   File:    $file"
         log "   Context: ${match}"
-        if [[ "$match" =~ "$MALICIOUS_WEBHOOK_URL" ]]; then
-            log "${RED}   Note:    This is the known malicious webhook URL.${NC}"
-        fi
         add_suspicious_file "$file"
         ((found_issues++))
-    done
-else # Fallback to standard grep
-    # Grep doesn't have a reliable "not binary" so we limit by extension.
+    done || true
+else
+    # Fallback to standard grep
     $GREP_CMD $GREP_ARGS -F "$MALICIOUS_WEBHOOK_URL" "$SCAN_DIR" \
         --include="*.js" --include="*.json" --include="*.yml" --include="*.yaml" --include="*.sh" \
         --exclude="$SCRIPT_NAME" --exclude-dir=node_modules --exclude-dir=.git 2>/dev/null | while IFS= read -r line; do
         
-        local file
         file=$(echo "$line" | cut -d: -f1)
         log "${RED}🚨 CRITICAL: Found known malicious webhook URL!${NC}"
         log "   File:    ${file}"
         log "   Match:   $line"
         add_suspicious_file "$file"
         ((found_issues++))
+    done || true
+
+    # Search for other patterns
+    for pattern in "npm publish.*--force" "trufflehog.*filesystem.*/"; do
+        $GREP_CMD $GREP_ARGS "$pattern" "$SCAN_DIR" \
+            --include="*.js" --include="*.json" --include="*.yml" --include="*.yaml" --include="*.sh" \
+            --exclude="$SCRIPT_NAME" --exclude-dir=node_modules --exclude-dir=.git 2>/dev/null | while IFS= read -r line; do
+            
+            file=$(echo "$line" | cut -d: -f1)
+            log "${RED}⚠️  FOUND: Suspicious pattern${NC}"
+            log "   File:    ${file}"
+            log "   Match:   $line"
+            add_suspicious_file "$file"
+            ((found_issues++))
+        done || true
     done
 fi
 
@@ -318,7 +344,7 @@ else
     log "\n${BLUE}================================================================${NC}"
     log "Scan completed at: $(date)"
     log "Scanned directories with .git: $scanned_dirs"
-    log "Scanned package.json files:  $scanned_pkgs"
+    log "Scanned package.json files:    $scanned_pkgs"
     log ""
     
     if [[ $found_issues -eq 0 ]]; then
