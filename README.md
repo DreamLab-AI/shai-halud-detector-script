@@ -1,109 +1,244 @@
-Below is a ready-to-use GitHub README that describes the Shai‑Hulud npm worm in depth, including indicators of compromise, attack flow, detection, and response. Each statement references public analyses and incident write‑ups.
+# audit-tree.sh - Shai-Hulud npm Worm Scanner
 
-# Shai‑Hulud npm Worm: Technical Overview and Detection Guide
+A comprehensive security scanner for detecting the Shai-Hulud npm worm and similar supply chain attacks in your local repositories.
 
-Shai‑Hulud is a self‑replicating worm targeting the npm ecosystem that injects malicious code into packages, steals developer and cloud tokens, and propagates via compromised maintainer accounts and GitHub workflows.[2][4]
-It executes through postinstall hooks, exfiltrates secrets to attacker infrastructure and public GitHub repos, and attempts to mass‑expose private repositories to accelerate credential theft and code leakage.[4][2]
+## 🚨 About the Shai-Hulud Worm
 
-## Key facts
+Shai-Hulud is a self-replicating worm targeting the npm ecosystem that injects malicious code into packages, steals developer and cloud tokens, and propagates via compromised maintainer accounts and GitHub workflows. First observed in mid-September 2025, it has rapidly spread across hundreds of npm packages.
 
-- First observed mid‑September 2025 with rapid spread across hundreds of npm packages, including popular dependencies, via compromised maintainer accounts.[2]
-- Propagation uses automated modification of victim‑maintained packages by adding a postinstall script that runs a malicious bundle.js on install.[2]
-- Secrets theft targets npm, GitHub, AWS, and GCP tokens directly and via bundled secret‑scanning (e.g., TruffleHog) to harvest further credentials.[2]
-- Exfiltration methods include creating a public GitHub repo named “Shai‑Hulud” containing data.json and a GitHub Actions workflow that sends data to webhook.site via double Base64 encoding.[4]
+### Key Characteristics:
+- **Propagation**: Modifies `package.json` to add malicious `postinstall` scripts
+- **Execution**: Runs `bundle.js` during package installation
+- **Data Theft**: Harvests npm, GitHub, AWS, and GCP tokens
+- **Exfiltration**: Creates public GitHub repos and uses GitHub Actions to leak data
+- **Lateral Movement**: Uses stolen credentials to compromise additional packages
 
-## Attack chain
+## 🛡️ What This Script Does
 
-1) Initial compromise  
-- Maintainer account credentials are obtained (phishing, token leakage, or prior compromises) and used to publish tainted package versions under trusted names.[2]
+`audit-tree.sh` performs deep scanning of your local repositories to detect:
 
-2) Package modification and postinstall trigger  
-- The worm adds a postinstall entry to package.json that executes bundle.js at install time, enabling execution on developer machines and CI agents that consume the compromised version.[2]
+- ✅ Malicious `bundle.js` files with known hashes
+- ✅ Suspicious `postinstall` scripts in `package.json`
+- ✅ The `shai-hulud-workflow.yml` GitHub Action
+- ✅ Exposed tokens in `.npmrc` files
+- ✅ Webhook exfiltration URLs (specifically `webhook.site/bb8ca5f6-4175-45d2-b042-fc9ebb8170b7`)
+- ✅ System-level infection files (`/tmp/processor.sh`, `/tmp/migrate-repos.sh`)
+- ✅ Repositories with `shai-hulud` branches
+- ✅ Suspicious `-migration` repository suffixes
 
-3) Secrets discovery and theft  
-- The payload directly targets env vars and token locations for npm, GitHub, AWS, and GCP and invokes secret‑scanning to expand loot beyond standard locations.[2]
+## 🚀 Quick Start
 
-4) Exfiltration to attacker infrastructure  
-- Two primary paths are used: creation of a public repo named “Shai‑Hulud” with a data.json containing stolen credentials/system info, and a GitHub Actions workflow “.github/workflows/shai‑hulud‑workflow.yml” that exfiltrates to webhook.site using encoded payloads.[4]
+### Installation
 
-5) Lateral spread via maintainer privileges  
-- With stolen npm credentials, the worm updates all packages the victim maintains, injecting the same postinstall + bundle.js mechanism to continue propagation.[2]
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/audit-tree.git
+cd audit-tree
 
-6) Repository exposure for data mining  
-- The malware attempts to create public copies of private repos with a “‑migration” suffix to harvest embedded secrets and code for further exploitation.[2]
+# Make the script executable
+chmod +x audit-tree.sh
+```
 
-## Indicators of compromise (IOCs)
+### Basic Usage
 
-- Files and scripts  
-  - package.json containing a postinstall running “node bundle.js” or equivalent suspicious installer scripts.[2]
-  - Presence of bundle.js added to packages without legitimate justification in the project’s history.[2]
-  - Malicious GitHub workflow: .github/workflows/shai‑hulud‑workflow.yml created on a branch named “shai‑hulud”.[4]
+```bash
+# Scan current directory and all subdirectories
+./audit-tree.sh
 
-- GitHub artifacts and naming patterns  
-  - Public repo named “Shai‑Hulud” under victim accounts containing data.json with encoded secrets and system info.[4]
-  - Public “migration” repos created from private ones, with names suffixed by “‑migration” and descriptions referencing Shai‑Hulud migration.[2]
+# Scan a specific directory
+./audit-tree.sh /path/to/projects
 
-- Network/Exfil endpoints  
-  - Outbound requests to webhook.site with specific UUID endpoints as documented in incident analyses, carrying double Base64‑encoded payloads.[4]
+# Generate JSON output for CI/CD pipelines
+./audit-tree.sh . --json
+```
 
-- Behavioral signals  
-  - npm publish activity from atypical hosts or CI runners and forced publishes of many packages in a short span under a single maintainer.[2]
-  - Postinstall execution spawning external tooling (e.g., secret scanners) and anomalous outbound network connections during install phases.[2]
+## 📋 Requirements
 
-## Impact
+### Required:
+- **zsh** (default on macOS, available on Linux)
+- **git** (for repository analysis)
 
-- Credential compromise of developer, registry, and cloud accounts enabling further package tampering, lateral movement, and data theft across organizations.[2]
-- Exposure of private repositories and source code, enabling downstream attacks and long‑tail leakage of embedded secrets or sensitive IP.[2]
+### Optional but Recommended:
+- **jq** - For enhanced `package.json` analysis
+- **ripgrep (rg)** - For faster scanning of large codebases
+- **sha256sum** or **shasum** - For file hash verification
 
-## Detection strategies
+The script will detect missing dependencies and continue with reduced functionality.
 
-- Static scans of repos and package artifacts  
-  - Search for package.json postinstall invoking bundle.js or other unexpected scripts and for the presence of bundle.js in release artifacts.[2]
-  - Audit for .github/workflows/shai‑hulud‑workflow.yml, branches named “shai‑hulud,” and any public repos named “Shai‑Hulud” with data.json.[4]
+## 🔍 Detection Examples
 
-- Inventory and SBOM checks  
-  - Diff lockfiles (package‑lock.json/yarn.lock/pnpm‑lock.yaml) and artifact layers to find versions reported as compromised by public analyses and advisories.[2]
+### Human-Readable Output
+```bash
+$ ./audit-tree.sh
 
-- Runtime and CI monitoring  
-  - Alert on node processes executing installer‑time scripts initiating network egress or invoking secret scanners during npm/yarn/pnpm install phases.[2]
-  - Monitor for unusual npm publish bursts and registry writes from non‑standard runners or developer endpoints outside known release workflows.[2]
+🔍 Enhanced NPM Worm Scanner - Checking for Shai-Hulud indicators
+================================================================
+Scanning directory: .
+Started at:         Thu 18 Sep 10:52:13 BST 2025
 
-- Network analytics  
-  - Block/alert on webhook.site exfiltration domains and investigate any encoded POST bodies from build agents or developer machines.[4]
+🔬 Checking for system-level indicators...
 
-## Response and remediation
+📁 Building file index and checking for suspicious files/directories...
+⚠️  FOUND: bundle.js in a package root
+   Location: ./vulnerable-package/
+   🚨 CRITICAL: Hash matches known malicious bundle.js!
 
-- Immediate token rotation  
-  - Revoke and rotate npm, GitHub, and cloud tokens; invalidate PATs and organization‑level secrets that may have been accessed via Actions.[4]
+🚨 CRITICAL: Found malicious 'postinstall' script in ./package.json
+   Script:   postinstall: "node bundle.js"
 
-- Package hygiene and cache purging  
-  - Roll back affected packages to known‑good versions, clear npm caches on developer machines and CI workers, and reinstall from trusted locks.[4]
+🌐 Scanning all non-binary files for string indicators...
+🚨 CRITICAL: Found known malicious webhook URL!
+   File:    ./src/exfiltrate.js
+   Match:   webhook.site/bb8ca5f6-4175-45d2-b042-fc9ebb8170b7
 
-- GitHub cleanup  
-  - Remove attacker‑created “Shai‑Hulud” repos and the malicious Actions workflow; review Actions logs for encoded data exfiltration events.[4]
+================================================================
+🚨 Found 3 potential indicator(s). Manual review is required.
 
-- Hardening to prevent re‑infection  
-  - Restrict who can publish to npm, enforce 2FA and granular tokens, protect private repos from public “migration,” and add approvals for public repo creation.[2]
+📄 Suspicious files requiring immediate manual review:
+   - ./vulnerable-package/bundle.js
+   - ./package.json
+   - ./src/exfiltrate.js
+```
 
-## Why this worm spread quickly
+### JSON Output for CI/CD
+```bash
+$ ./audit-tree.sh . --json | jq
+{
+  "scan_completed": "2025-09-18T09:52:13Z",
+  "scan_directory": ".",
+  "issues_found": 3,
+  "scanned_git_directories": 5,
+  "scanned_package_json": 12,
+  "suspicious_files": [
+    "./vulnerable-package/bundle.js",
+    "./package.json",
+    "./src/exfiltrate.js"
+  ],
+  "missing_dependencies": [],
+  "tools_used": {
+    "grep": "rg",
+    "hash": "sha256sum"
+  }
+}
+```
 
-- It abuses trusted maintainer privileges to insert itself into legitimate packages, piggybacking on the dependency graph and install lifecycle to execute widely.[2]
-- Dual exfiltration channels (public repos and Actions to webhook.site) plus automated migration of private repos increase both visibility and data theft efficiency.[4]
+## 🎯 Known Indicators of Compromise (IOCs)
 
-## References
+The script searches for these specific indicators:
 
-- ReversingLabs: In‑depth analysis of the self‑replicating npm worm, propagation via postinstall and bundle.js, token theft targets, and repo migration behavior.[2]
-- Kaspersky: Exfiltration details via public “Shai‑Hulud” repos and GitHub Actions to webhook.site, and incident response guidance and outcomes.[4]
+### Files and Hashes
+- **bundle.js** with SHA-256: `46faab8ab153fae6e80e7cca38eab363075bb524edd79e42269217a083628f09`
+- **.github/workflows/shai-hulud-workflow.yml**
+- **/tmp/processor.sh** and **/tmp/migrate-repos.sh** (system infection)
 
-Contributions welcome. Please open issues or PRs with additional IOCs, safe YARA/Semgrep rules, and reproducible detections observed in real environments.[4][2]
+### Package Modifications
+- `postinstall` scripts executing `node bundle.js`
+- Suspicious lifecycle hooks with `curl`, `wget`, or `eval()`
+- Force-published packages with `npm publish --force`
 
-[1](https://github.com/brunos3d/crysknife)
-[2](https://www.reversinglabs.com/blog/shai-hulud-worm-npm)
-[3](https://www.reversinglabs.com/blog/threat-actor-banana-squad-exploits-github-repos-in-new-campaign)
-[4](https://www.kaspersky.com/blog/tinycolor-shai-hulud-supply-chain-attack/54315/)
-[5](https://www.upguard.com/blog/the-shai-hulud-attack-explained)
-[6](https://news.ycombinator.com/item?id=45260741)
-[7](https://hackread.com/hackers-exploit-fake-github-repositories-gitvenom-malware/)
-[8](https://github.com/orgs/community/discussions/173836)
-[9](https://x.com/david_das_neves?lang=en-GB)
-[10](https://hackread.com/silverrat-source-code-leaked-online-you-need-to-know/)
+### Repository Artifacts
+- Branches named **shai-hulud**
+- Public repositories named **Shai-Hulud** containing `data.json`
+- Repositories with **-migration** suffix (indicating exposed private code)
+
+### Network Indicators
+- Webhook URL: `webhook.site/bb8ca5f6-4175-45d2-b042-fc9ebb8170b7`
+- TruffleHog filesystem scans of root directory
+
+## 🛠️ Advanced Usage
+
+### CI/CD Integration
+
+```yaml
+# GitHub Actions example
+- name: Scan for npm worm
+  run: |
+    chmod +x audit-tree.sh
+    if ! ./audit-tree.sh . --json > scan-results.json; then
+      echo "::error::Potential npm worm detected!"
+      cat scan-results.json | jq -r '.suspicious_files[]' | while read file; do
+        echo "::warning file=$file::Suspicious file detected"
+      done
+      exit 1
+    fi
+```
+
+### Automated Monitoring
+
+```bash
+# Add to cron for daily scans
+0 2 * * * /path/to/audit-tree.sh /home/projects --json >> /var/log/npm-worm-scan.log 2>&1
+```
+
+## 🚑 If Infections Are Found
+
+1. **Immediately rotate all credentials**:
+   - npm tokens
+   - GitHub personal access tokens
+   - Cloud provider credentials (AWS, GCP, Azure)
+
+2. **Clean infected packages**:
+   ```bash
+   # Remove malicious files
+   rm -f bundle.js
+   rm -f .github/workflows/shai-hulud-workflow.yml
+   
+   # Remove malicious postinstall scripts
+   npm pkg delete scripts.postinstall
+   ```
+
+3. **Audit and revert packages**:
+   ```bash
+   # Check npm publish history
+   npm view <package-name> time --json
+   
+   # Revert to clean version
+   npm install <package-name>@<clean-version> --save-exact
+   ```
+
+4. **Review GitHub repositories**:
+   - Delete any "Shai-Hulud" or "-migration" repositories
+   - Check GitHub Actions logs for data exfiltration
+   - Review audit logs for unauthorized access
+
+## 🔒 Prevention Best Practices
+
+1. **Enable 2FA** on npm and GitHub accounts
+2. **Use granular access tokens** with minimal permissions
+3. **Implement package publishing restrictions**
+4. **Regular dependency audits**: `npm audit`
+5. **Lock file verification** before deployments
+6. **Monitor for unexpected package publishes**
+
+## 📊 Performance Considerations
+
+- Uses `ripgrep` when available for 10x faster scanning
+- Excludes `node_modules` and `.git` directories by default
+- Single-pass file indexing minimizes disk I/O
+- Efficient pattern matching with fixed strings where possible
+
+## 🤝 Contributing
+
+Contributions are welcome! Please submit:
+- Additional IOCs from real-world detections
+- Performance improvements
+- Support for additional package managers (yarn, pnpm)
+- YARA/Semgrep rule equivalents
+
+## 📚 References
+
+- [ReversingLabs: Shai-Hulud Worm Analysis](https://www.reversinglabs.com/blog/shai-hulud-worm-npm)
+- [Kaspersky: Supply Chain Attack Details](https://www.kaspersky.com/blog/tinycolor-shai-hulud-supply-chain-attack/54315/)
+- [UpGuard: Attack Explained](https://www.upguard.com/blog/the-shai-hulud-attack-explained)
+
+## ⚖️ License
+
+MIT License - See [LICENSE](LICENSE) file for details
+
+## ⚠️ Disclaimer
+
+This tool is provided for security auditing purposes only. Always verify findings manually before taking action. The authors are not responsible for any misuse or damage caused by this tool.
+
+---
+
+**Stay safe out there!** 🛡️ If this tool helped you detect an infection, please consider sharing your experience (anonymized) to help improve detection patterns.
